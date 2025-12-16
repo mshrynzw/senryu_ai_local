@@ -134,17 +134,25 @@ def _parse_json_array(text: str, expected_count: int = 0) -> List[Dict[str, Any]
                 print(f"  デバッグ: JSONパースは成功しましたが、結果が0件です。")
             # データの正規化：中句/下句が別キーの場合、lines配列に統合
             normalized_result = []
+            skipped_reasons = {"not_dict": 0, "chinese": 0, "no_lines": 0, "invalid_lines": 0}
             for item in result:
                 if not isinstance(item, dict):
+                    skipped_reasons["not_dict"] += 1
                     continue
-                # 中国語などの不正な文字が含まれている場合はスキップ（lines配列内の文字列のみチェック）
+                # 中国語などの不正な文字が含まれている場合はスキップ
+                # 注意: 日本語の漢字も\u4e00-\u9fffに含まれるため、より厳密なチェックが必要
+                # 簡体字や繁体字の特徴的な文字のみをチェック
                 has_chinese = False
                 if "lines" in item and isinstance(item.get("lines"), list):
                     for line in item["lines"]:
-                        if isinstance(line, str) and re.search(r'[\u4e00-\u9fff]', line):
-                            has_chinese = True
-                            break
+                        if isinstance(line, str):
+                            # 簡体字の特徴的な文字（简化字）をチェック
+                            # ただし、日本語でも使われる漢字が多いため、より厳密なチェックは難しい
+                            # 一時的に中国語フィルタリングを無効化（日本語の漢字を誤検出しないように）
+                            # 必要に応じて、より高度な言語判定を使用
+                            pass
                 if has_chinese:
+                    skipped_reasons["chinese"] += 1
                     continue
                 # linesが配列でない、または中句/下句が存在する場合
                 if "lines" not in item or not isinstance(item.get("lines"), list):
@@ -167,7 +175,12 @@ def _parse_json_array(text: str, expected_count: int = 0) -> List[Dict[str, Any]
                         del item["中句"]
                         del item["下句"]
                     elif "lines" not in item:
+                        skipped_reasons["no_lines"] += 1
                         continue  # linesがない場合はスキップ
+                    elif not isinstance(item.get("lines"), list):
+                        # linesが配列でない場合（中句/下句もない場合）
+                        skipped_reasons["invalid_lines"] += 1
+                        continue
                 # linesが3要素でない場合の処理
                 if isinstance(item.get("lines"), list) and len(item["lines"]) != 3:
                     # 1要素で全角スペースで区切られている場合、分割を試みる
@@ -202,7 +215,14 @@ def _parse_json_array(text: str, expected_count: int = 0) -> List[Dict[str, Any]
             if expected_count > 0 and len(normalized_result) < expected_count * 0.1:  # 要求の10%未満の場合
                 print(f"警告: 要求数 {expected_count} 件に対して {len(normalized_result)} 件しか生成されませんでした。")
                 if len(result) > len(normalized_result):
-                    print(f"  デバッグ: 元のJSONには {len(result)} 件ありましたが、{len(result) - len(normalized_result)} 件がフィルタリングで除外されました。")
+                    total_skipped = sum(skipped_reasons.values())
+                    print(f"  デバッグ: 元のJSONには {len(result)} 件ありましたが、{total_skipped} 件がフィルタリングで除外されました。")
+                    if total_skipped > 0:
+                        print(f"    除外理由: 辞書でない={skipped_reasons['not_dict']}, 中国語={skipped_reasons['chinese']}, linesなし={skipped_reasons['no_lines']}, 無効なlines={skipped_reasons['invalid_lines']}")
+                    # 最初の除外されたアイテムの例を表示
+                    if len(result) > 0:
+                        sample_item = result[0]
+                        print(f"    サンプル（最初の1件）: {sample_item}")
             return normalized_result
         except json.JSONDecodeError as e:
             if attempt == 4:  # 最後の試行（0-4なので4が最後）
@@ -323,22 +343,10 @@ def _parse_json_array(text: str, expected_count: int = 0) -> List[Dict[str, Any]
                     if '{' in line and '}' not in line:
                         # 不完全な行なのでスキップ
                         continue
-                    # 中国語などの不正な文字が含まれている行をスキップ
-                    # ただし、文字列リテラル内（"..."）の中国語のみをチェック
-                    # JSONの構造部分は除外
-                    in_string = False
-                    has_chinese_in_string = False
-                    i = 0
-                    while i < len(line):
-                        if line[i] == '"' and (i == 0 or line[i-1] != '\\'):
-                            in_string = not in_string
-                        elif in_string and re.match(r'[\u4e00-\u9fff]', line[i]):
-                            has_chinese_in_string = True
-                            break
-                        i += 1
-                    if has_chinese_in_string:
-                        # 文字列リテラル内に中国語が含まれている行をスキップ
-                        continue
+                    # 中国語フィルタリングは一時的に無効化
+                    # 日本語の漢字も\u4e00-\u9fffに含まれるため、誤検出を避けるため
+                    # 必要に応じて、より高度な言語判定を使用
+                    pass
                     fixed_lines.append(line)
                 json_str = '\n'.join(fixed_lines)
                 # 最後の不完全なエントリを削除（正規表現でも）
